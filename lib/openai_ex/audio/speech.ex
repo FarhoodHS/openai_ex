@@ -3,13 +3,17 @@ defmodule OpenaiEx.Audio.Speech do
   This module provides an implementation of the OpenAI audio speech API. The API reference can be found at https://platform.openai.com/docs/api-reference/audio/createSpeech.
   """
   alias OpenaiEx.Http
+  alias OpenaiEx.HttpSse
+  alias OpenaiEx.HttpBinaryStream
 
   @api_fields [
     :input,
     :model,
     :voice,
     :response_format,
-    :speed
+    :instructions,
+    :speed,
+    :stream_format
   ]
 
   @doc """
@@ -28,6 +32,14 @@ defmodule OpenaiEx.Audio.Speech do
 
   See https://platform.openai.com/docs/api-reference/audio/createSpeech for more information.
   """
+  def create(openai = %OpenaiEx{}, audio = %{stream_format: "sse"}, stream: true) do
+    openai |> HttpSse.post("/audio/speech", json: audio |> Map.take(@api_fields))
+  end
+
+  def create(openai = %OpenaiEx{}, audio = %{}, stream: true) do
+    openai |> HttpBinaryStream.post("/audio/speech", json: audio |> Map.take(@api_fields))
+  end
+
   def create!(openai = %OpenaiEx{}, audio = %{}) do
     openai |> create(audio) |> Http.bang_it!()
   end
