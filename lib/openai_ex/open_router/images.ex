@@ -37,9 +37,12 @@ defmodule OpenaiEx.OpenRouter.Images do
   def new(args = %{}), do: Map.take(args, @api_fields)
 
   @doc """
-  Streaming image generation (SSE).
+  Streaming image generation.
 
-  Returns `{:ok, %{status, headers, body_stream, task_pid}}` or
+  Content-type aware: when OpenRouter streams, returns
+  `{:ok, %{status, headers, body_stream, task_pid}}`. When the model doesn't
+  support SSE, OpenRouter ignores `stream` and returns a buffered body, so this
+  returns `{:ok, %{status, headers, body}}` (decoded JSON) instead. On failure,
   `{:error, %OpenaiEx.Error{}}`.
   """
   def create!(openai = %OpenaiEx{}, body = %{}, stream: true) do
@@ -48,7 +51,7 @@ defmodule OpenaiEx.OpenRouter.Images do
 
   def create(openai = %OpenaiEx{}, body = %{}, stream: true) do
     ep = Map.get(openai, :_ep_path_mapping).(@ep_url)
-    openai |> HttpSse.post(ep, json: body |> Map.take(@api_fields) |> Map.put(:stream, true))
+    openai |> HttpSse.post_stream_aware(ep, json: body |> Map.take(@api_fields) |> Map.put(:stream, true))
   end
 
   @doc """

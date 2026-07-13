@@ -23,6 +23,64 @@ defmodule OpenaiEx.HttpSse do
     send(task_pid, :cancel_request)
   end
 
+  @doc false
+  # Like `post/3`, but content-type aware. Some providers (e.g. OpenRouter for
+  # models without native streaming) ignore `stream` and answer with a buffered
+  # `application/json` body. The SSE parser would silently drop such a body, so
+  # here we detect it from the response headers, drain + decode it, and return it
+  # as `:body`. Returns one of:
+  #
+  #   {:ok, %{status, headers, body_stream, task_pid}}  # text/event-stream
+  #   {:ok, %{status, headers, body}}                   # buffered application/json
+  #   {:error, %OpenaiEx.Error{}}
+  def post_stream_aware(openai = %OpenaiEx{}, url, json: json) do
+    me = self()
+    ref = make_ref()
+    request = HttpFinch.build_post(openai, url, json: json)
+    task = Task.async(fn -> finch_stream(openai, request, me, ref) end)
+    result = build_stream_aware(openai, task, request, ref)
+    unless match?({:ok, %{task_pid: _}}, result), do: Task.shutdown(task)
+    result
+  end
+
+  defp build_stream_aware(openai, task, request, ref) do
+    with {:ok, status} <- receive_with_timeout(ref, :status, openai.receive_timeout),
+         {:ok, headers} <- receive_with_timeout(ref, :headers, openai.receive_timeout) do
+      cond do
+        status not in 200..299 ->
+          with {:ok, body} <- extract_error(ref, "", openai.receive_timeout) do
+            response = %{status: status, headers: headers, body: body}
+            {:error, Error.status_error(status, response, body)}
+          else
+            error_result -> handle_receive_error(error_result, request)
+          end
+
+        sse_content_type?(headers) ->
+          stream_receiver = create_stream_receiver(ref, openai.stream_timeout)
+          body_stream = Stream.resource(&init_stream/0, stream_receiver, end_stream(task))
+          {:ok, %{status: status, headers: headers, body_stream: body_stream, task_pid: task.pid}}
+
+        true ->
+          # Provider ignored `stream` and returned a buffered body. `extract_error`
+          # is just a drain-and-JSON-decode helper — reuse it for this body too.
+          with {:ok, body} <- extract_error(ref, "", openai.receive_timeout) do
+            {:ok, %{status: status, headers: headers, body: body}}
+          else
+            error_result -> handle_receive_error(error_result, request)
+          end
+      end
+    else
+      error_result -> handle_receive_error(error_result, request)
+    end
+  end
+
+  defp sse_content_type?(headers) do
+    Enum.any?(headers, fn {k, v} ->
+      String.downcase(k) == "content-type" and
+        String.contains?(String.downcase(v), "text/event-stream")
+    end)
+  end
+
   defp build_sse_stream(openai, task, request, ref) do
     with {:ok, status} <- receive_with_timeout(ref, :status, openai.receive_timeout),
          {:ok, headers} <- receive_with_timeout(ref, :headers, openai.receive_timeout) do
